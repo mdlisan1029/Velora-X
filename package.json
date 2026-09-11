@@ -2,9 +2,9 @@
   "name": "velora-x-ai-router",
   "version": "1.0.0",
   "private": true,
-  "description": "Velora X \u2014 a Vercel-ready multi-provider AI router with automatic fallback.",
+  "description": "Velora X — a Vercel-ready multi-provider AI router.",
   "engines": {
-    "node": ">=20"
+    "node": "22.x"
   },
   "scripts": {
     "dev": "vercel dev"
