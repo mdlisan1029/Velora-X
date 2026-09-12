@@ -358,6 +358,17 @@
     return chat;
   }
 
+  window.addEventListener('velora:new-chat', async () => {
+    try {
+      const fresh = createChatRecord();
+      saveActive(fresh.id);
+      state.chats.push(fresh);
+      await putChat(fresh);
+      renderList(desktopCard);
+      renderList(drawer);
+    } catch {}
+  });
+
   async function init() {
     if (state.initialized) return;
     state.initialized = true;
@@ -387,16 +398,8 @@
 
     const clearBtn = $('#clearBtn');
     if (clearBtn) {
-      clearBtn.addEventListener('click', async (event) => {
-        // New chat intentionally creates one new record.
-        // Delete never calls this handler, so it won't create a replacement.
-        if (event?.isTrusted === false) return;
-        const fresh = createChatRecord();
-        saveActive(fresh.id);
-        state.chats.push(fresh);
-        await putChat(fresh);
-        renderList(desktopCard);
-        renderList(drawer);
+      clearBtn.addEventListener('click', () => {
+        // Clear only affects the visible chat UI. Explicit New chat handles persistence.
       });
     }
 
