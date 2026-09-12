@@ -20,12 +20,21 @@ function normalize(p, index = 0) {
 }
 
 function provider(name, envPrefix, defaults = {}) {
+  let model = process.env[`${envPrefix}_MODEL`] || defaults.model;
+  const models = Array.isArray(defaults.models) ? [...defaults.models] : [];
+
+  // Do not keep the retired/restricted Gemini default from older deployments.
+  if (envPrefix === 'GEMINI' && /^(gemini-2\.5-flash|gemini-2\.5-flash-lite)$/i.test(model)) {
+    model = 'gemini-3.8-flash';
+  }
+
   return normalize({
     id: envPrefix.toLowerCase(),
     name,
     key: process.env[`${envPrefix}_API_KEY`],
     baseUrl: process.env[`${envPrefix}_BASE_URL`] || defaults.baseUrl,
-    model: process.env[`${envPrefix}_MODEL`] || defaults.model,
+    model,
+    models: [model, ...models].filter((v, i, arr) => v && arr.indexOf(v) === i),
     imageUrl: process.env[`${envPrefix}_IMAGE_URL`] || defaults.imageUrl,
     videoUrl: process.env[`${envPrefix}_VIDEO_URL`] || defaults.videoUrl,
     imageModel: process.env[`${envPrefix}_IMAGE_MODEL`] || defaults.imageModel,
@@ -49,7 +58,12 @@ function parseJsonProviders() {
 export function getProviders() {
   const builtIns = [
     provider('NaraRouter', 'NARA', { baseUrl: 'https://router.bynara.id/v1', model: 'auto', website: 'https://router.bynara.id' }),
-    provider('Google Gemini', 'GEMINI', { baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai', model: 'gemini-2.5-flash', website: 'https://ai.google.dev' }),
+    provider('Google Gemini', 'GEMINI', {
+      baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
+      model: 'gemini-3.8-flash',
+      models: ['gemini-3.7-flash', 'gemini-3.6-flash'],
+      website: 'https://ai.google.dev'
+    }),
     provider('Groq', 'GROQ', { baseUrl: 'https://api.groq.com/openai/v1', model: 'llama-3.3-70b-versatile', website: 'https://groq.com' }),
     provider('OpenRouter', 'OPENROUTER', { baseUrl: 'https://openrouter.ai/api/v1', model: 'openai/gpt-oss-120b', website: 'https://openrouter.ai' }),
     provider('OpenAI', 'OPENAI', { baseUrl: 'https://api.openai.com/v1', model: 'gpt-5.6-luna', imageModel: 'gpt-image-1', website: 'https://platform.openai.com' }),
