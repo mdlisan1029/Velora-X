@@ -190,11 +190,8 @@
       wrap.appendChild(inner);
       messagesEl.appendChild(wrap);
     });
-    requestAnimationFrame(() => {
-      const sc = document.scrollingElement || document.documentElement;
-      sc.scrollTop = sc.scrollHeight;
-      messagesEl.scrollTop = messagesEl.scrollHeight;
-    });
+    // Do not force the page to the bottom when loading/reopening a chat.
+    // Let the browser preserve the current scroll position naturally.
   }
 
   function renderList(root) {
