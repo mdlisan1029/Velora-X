@@ -17,6 +17,55 @@ let history = [];
 let providers = [];
 let busy = false;
 let lastAssistantText = '';
+let pendingAttachment = null;
+const fileInput = document.querySelector('#fileInput');
+const attachBtn = document.querySelector('#attachBtn');
+const attachmentBar = document.querySelector('#attachmentBar');
+
+function formatBytes(n){ if(!Number.isFinite(n)) return ''; const u=['B','KB','MB','GB']; let i=0,x=n; while(x>=1024&&i<u.length-1){x/=1024;i++;} return `${x.toFixed(x>=10||i===0?0:1)} ${u[i]}`; }
+function isTextLike(file){
+  const m=String(file.type||'').toLowerCase();
+  return m.startsWith('text/') || /json|javascript|xml|yaml|markdown|csv/.test(m) || /\.(txt|md|csv|json|js|ts|jsx|tsx|py|java|c|cpp|h|hpp|cs|go|rs|php|rb|sql|html|css|scss|sass|xml|yml|yaml|toml|sh)$/i.test(file.name);
+}
+function isSupportedAttachment(file){
+  const m=String(file.type||'').toLowerCase();
+  return m.startsWith('image/') || m==='application/pdf' || isTextLike(file);
+}
+function renderAttachmentBar(){
+  if(!attachmentBar) return;
+  attachmentBar.innerHTML='';
+  if(!pendingAttachment) return;
+  const chip=document.createElement('div'); chip.className='attachment-chip';
+  const kind=document.createElement('span'); kind.className='kind'; kind.textContent=pendingAttachment.file.type.startsWith('image/')?'IMG':'FILE';
+  const name=document.createElement('span'); name.className='name'; name.textContent=pendingAttachment.file.name;
+  const size=document.createElement('span'); size.className='size'; size.textContent=formatBytes(pendingAttachment.file.size);
+  const x=document.createElement('button'); x.type='button'; x.textContent='×'; x.title='Remove'; x.onclick=()=>{pendingAttachment=null; if(fileInput) fileInput.value=''; renderAttachmentBar();};
+  chip.append(kind,name,size,x); attachmentBar.appendChild(chip);
+}
+function readFileAsBase64(file){
+  return new Promise((resolve,reject)=>{ const r=new FileReader(); r.onload=()=>{const value=String(r.result||''); resolve(value.includes(',')?value.split(',')[1]:value);}; r.onerror=()=>reject(r.error||new Error('Could not read file.')); r.readAsDataURL(file); });
+}
+function readFileAsText(file){
+  return new Promise((resolve,reject)=>{ const r=new FileReader(); r.onload=()=>resolve(String(r.result||'')); r.onerror=()=>reject(r.error||new Error('Could not read text file.')); r.readAsText(file); });
+}
+async function prepareAttachment(file){
+  if(!file) return;
+  if(!isSupportedAttachment(file)){ alert('Unsupported file type. Use an image, PDF, text, code, CSV or JSON file.'); return; }
+  // Keep requests safely below Vercel function payload limits.
+  if(file.size > 2.5*1024*1024){ alert('For this first version, keep attachments under 2.5 MB. Larger-file upload can be added later with Gemini Files API + direct storage.'); return; }
+  try{
+    let data;
+    if(isTextLike(file)){
+      const text=await readFileAsText(file);
+      if(text.length>700000){ alert('This text/code file is too large for a single chat request. Keep it under about 700 KB.'); return; }
+      data={kind:'text',name:file.name,mimeType:file.type||'text/plain',text};
+    }else{
+      data={kind:'binary',name:file.name,mimeType:file.type||'application/octet-stream',base64:await readFileAsBase64(file)};
+    }
+    pendingAttachment={file,data}; renderAttachmentBar();
+  }catch(err){ alert(err?.message||'Could not prepare the attachment.'); }
+}
+if(attachBtn&&fileInput){attachBtn.addEventListener('click',()=>fileInput.click()); fileInput.addEventListener('change',()=>{const f=fileInput.files?.[0]; if(f)prepareAttachment(f);});}
 
 function esc(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
 function getScrollViewport(){return window.matchMedia('(max-width:680px)').matches ? document.scrollingElement : messagesEl;}
@@ -142,7 +191,7 @@ function addHTMLActions(bubble){const host=bubble.parentElement;if(!host||host.q
 function escUrl(url){
   try{const u=new URL(String(url));return /^https?:$/.test(u.protocol)?u.href:'';}catch{return '';}
 }
-function researchLoading(){return '<div class="research-loading"><span class="research-spinner"></span><span>Searching Tavily and synthesizing sources…</span></div>';}
+function researchLoading(){return '<div class="research-loading"><span class="research-spinner"></span><span>Searching the web and synthesizing sources…</span></div>';}
 function renderResearchResult(data){
   const box=$('#researchResults');
   if(!box)return;
@@ -162,7 +211,7 @@ function renderResearchResult(data){
   const saveChat=document.createElement('button');saveChat.type='button';saveChat.className='mini';saveChat.textContent='Add to current chat';saveChat.onclick=()=>{
     const sourceText=(data.sources||[]).slice(0,12).map((x,i)=>`- [${x.title||x.url}](${x.url})`).join('\n');
     const content=`${data.text||''}${sourceText?`\n\n### Sources\n${sourceText}`:''}`;
-    window.dispatchEvent(new CustomEvent('velora:save-to-chat',{detail:{user:$('#researchPrompt')?.value.trim()||'Web research',assistant:content,meta:`via Tavily + NaraRouter${data.mode==='deep'?' · Deep Research':''}`}}));
+    window.dispatchEvent(new CustomEvent('velora:save-to-chat',{detail:{user:$('#researchPrompt')?.value.trim()||'Web research',assistant:content,meta:`via OpenAI web search${data.mode==='deep'?' · Deep Research':''}`}}));
     saveChat.textContent='Saved to chat';saveChat.disabled=true;
   };
   actions.append(copy,save,saveChat);answer.appendChild(actions);box.appendChild(answer);
@@ -212,8 +261,40 @@ $('#researchClearBtn')?.addEventListener('click',()=>{const p=$('#researchPrompt
 async function loadProviders(){
   try{const r=await fetch('/api/health');const d=await r.json();providers=d.providers||[];providerCount.textContent=providers.length;providerList.innerHTML='';providerSelect.innerHTML='<option value="auto">Auto / first available</option>';const mediaProviders=[];providers.forEach(p=>{const row=document.createElement('div');row.className='provider';row.dataset.id=p.id;row.innerHTML=`<span class="dot"></span><span class="name">${esc(p.name)}</span><span class="model">${esc(p.model)}</span>`;row.onclick=()=>selectProvider(p.id);providerList.appendChild(row);if(p.chat)providerSelect.innerHTML+=`<option value="${esc(p.id)}">${esc(p.name)}</option>`;if(p.image||p.video)mediaProviders.push(p);});if(!providers.length)providerList.innerHTML='<div class="muted">No API providers configured.</div>';$('#mediaProvider').innerHTML='<option value="">Auto</option>'+mediaProviders.map(p=>`<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('');}catch{providerList.innerHTML='<div class="muted">Could not load providers.</div>'}
 }
+async function analyzeAttachment(prompt, attachment){
+  const r=await fetch('/api/analyze',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt,attachment})});
+  const d=await r.json().catch(()=>({error:'Invalid analysis response'}));
+  if(!r.ok) throw new Error(d.error||'File analysis failed');
+  return d;
+}
 async function streamChat(){
-  const text=promptEl.value.trim();if(!text||busy)return;const shouldStick=isNearBottom();addMessage('user',text);history.push({role:'user',content:text});promptEl.value='';promptEl.style.height='auto';setBusy(true);const placeholder=addMessage('assistant','Thinking…');let full='',buf='',raf=0,pending=false,seenData=false,ended=false;const controller=new AbortController();let idleTimer=null;const resetIdle=()=>{clearTimeout(idleTimer);idleTimer=setTimeout(()=>controller.abort(),45000)};const render=()=>{raf=0;pending=false;placeholder.textContent=full;if(shouldStick)scrollBottom()};const scheduleRender=()=>{if(!pending){pending=true;raf=requestAnimationFrame(render);}};const consumeEvent=(event)=>{const lines=event.split(/\r?\n/);let data='';for(const line of lines){if(line.startsWith('data:'))data+=line.slice(5).trim();}if(!data)return;seenData=true;if(data==='[DONE]'){ended=true;return;}try{const j=JSON.parse(data);const delta=j.choices?.[0]?.delta?.content??j.choices?.[0]?.message?.content??'';if(delta){full+=String(delta);scheduleRender();}}catch{}};
+  const text=promptEl.value.trim();if(!text||busy)return;
+  const shouldStick=isNearBottom();
+  const attachment=pendingAttachment;
+  const userLabel=attachment ? `${text}\n\n[Attachment: ${attachment.file.name}]` : text;
+  addMessage('user',text,attachment?`📎 ${attachment.file.name}`:'');
+  history.push({role:'user',content:userLabel});
+  promptEl.value='';promptEl.style.height='auto';
+  if(attachment){
+    setBusy(true);
+    const placeholder=addMessage('assistant','Analyzing attachment…');
+    try{
+      const d=await analyzeAttachment(text,attachment.data);
+      placeholder.textContent='';
+      renderAssistantBubble(placeholder,String(d.text||'No analysis response returned.'));
+      const acts=makeActions(placeholder,String(d.text||'')); placeholder.parentElement.appendChild(acts);
+      const m=document.createElement('div');m.className='meta';m.textContent=`via Gemini · ${d.model||'multimodal'}`;placeholder.parentElement.appendChild(m);
+      history.push({role:'assistant',content:String(d.text||''),meta:`via Gemini · ${d.model||'multimodal'}`});
+      lastAssistantText=String(d.text||'');
+      pendingAttachment=null; if(fileInput) fileInput.value=''; renderAttachmentBar();
+      if(shouldStick) requestAnimationFrame(scrollBottom);
+    }catch(err){
+      placeholder.textContent=`Error: ${err?.message||'File analysis failed'}`; placeholder.style.color='var(--bad)';
+      history.pop();
+    }finally{setBusy(false);}
+    return;
+  }
+  setBusy(true);const placeholder=addMessage('assistant','Thinking…');let full='',buf='',raf=0,pending=false,seenData=false,ended=false;const controller=new AbortController();let idleTimer=null;const resetIdle=()=>{clearTimeout(idleTimer);idleTimer=setTimeout(()=>controller.abort(),45000)};const render=()=>{raf=0;pending=false;placeholder.textContent=full;if(shouldStick)scrollBottom()};const scheduleRender=()=>{if(!pending){pending=true;raf=requestAnimationFrame(render);}};const consumeEvent=(event)=>{const lines=event.split(/\r?\n/);let data='';for(const line of lines){if(line.startsWith('data:'))data+=line.slice(5).trim();}if(!data)return;seenData=true;if(data==='[DONE]'){ended=true;return;}try{const j=JSON.parse(data);const delta=j.choices?.[0]?.delta?.content??j.choices?.[0]?.message?.content??'';if(delta){full+=String(delta);scheduleRender();}}catch{}};
   try{const providerId=providerSelect.value;const payload={messages:history,model:modelSelect.value||'',temperature:Number(tempRange.value),max_tokens:Number(maxTokens.value),reasoning_effort:reasoning.value||undefined,stream:true,providerOrder:providerId==='auto'?[]:[providerId]};const r=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),signal:controller.signal});if(!r.ok){const e=await r.json().catch(()=>({error:'Request failed'}));throw new Error(e.error||'Request failed');}const provider=r.headers.get('X-Velora-Provider');const reader=r.body?.getReader();if(!reader)throw new Error('Streaming response is unavailable.');const decoder=new TextDecoder();resetIdle();while(!ended){const {value,done}=await reader.read();if(done)break;resetIdle();buf+=decoder.decode(value,{stream:true});const events=buf.split(/\r?\n\r?\n/);buf=events.pop()||'';for(const event of events)consumeEvent(event);}if(buf.trim())consumeEvent(buf);clearTimeout(idleTimer);if(raf)cancelAnimationFrame(raf);placeholder.textContent='';renderAssistantBubble(placeholder,full||(!seenData?'No stream data returned.':'No text response returned.'));const acts=makeActions(placeholder,full||'');placeholder.parentElement.appendChild(acts);lastAssistantText=full||'';const m=document.createElement('div');m.className='meta';m.textContent=provider?`via ${provider}`:'via configured provider';placeholder.parentElement.appendChild(m);history.push({role:'assistant',content:full||''});if(shouldStick)requestAnimationFrame(scrollBottom);}catch(err){clearTimeout(idleTimer);if(raf)cancelAnimationFrame(raf);placeholder.textContent=`Error: ${err?.name==='AbortError'?'The response stream timed out. Please send the prompt again.':(err?.message||'Request failed')}`;placeholder.style.color='var(--bad)';history.pop();}finally{setBusy(false);if(!window.matchMedia('(max-width:680px)').matches){try{promptEl.focus({preventScroll:true});}catch{promptEl.focus();}}}
 }
 $('#composer').addEventListener('submit',e=>{e.preventDefault();streamChat()});
