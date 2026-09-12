@@ -9,7 +9,7 @@ function normalize(p, index = 0) {
   if (!key || !baseUrl || !model) return null;
   return {
     id, name, key, baseUrl, model,
-    models: Array.isArray(p.models) ? p.models.map(String).filter(Boolean) : (model ? [model] : []),
+    models: Array.isArray(p.models) ? p.models.map(String).filter(Boolean) : [model],
     chat: p.chat !== false,
     imageUrl: trimSlash(p.imageUrl || ''),
     videoUrl: trimSlash(p.videoUrl || ''),
@@ -20,21 +20,12 @@ function normalize(p, index = 0) {
 }
 
 function provider(name, envPrefix, defaults = {}) {
-  let model = process.env[`${envPrefix}_MODEL`] || defaults.model;
-  const models = Array.isArray(defaults.models) ? [...defaults.models] : [];
-
-  // Do not keep the retired/restricted Gemini default from older deployments.
-  if (envPrefix === 'GEMINI' && /^(gemini-2\.5-flash|gemini-2\.5-flash-lite)$/i.test(model)) {
-    model = 'gemini-3.8-flash';
-  }
-
   return normalize({
     id: envPrefix.toLowerCase(),
     name,
     key: process.env[`${envPrefix}_API_KEY`],
     baseUrl: process.env[`${envPrefix}_BASE_URL`] || defaults.baseUrl,
-    model,
-    models: [model, ...models].filter((v, i, arr) => v && arr.indexOf(v) === i),
+    model: process.env[`${envPrefix}_MODEL`] || defaults.model,
     imageUrl: process.env[`${envPrefix}_IMAGE_URL`] || defaults.imageUrl,
     videoUrl: process.env[`${envPrefix}_VIDEO_URL`] || defaults.videoUrl,
     imageModel: process.env[`${envPrefix}_IMAGE_MODEL`] || defaults.imageModel,
@@ -57,11 +48,18 @@ function parseJsonProviders() {
 
 export function getProviders() {
   const builtIns = [
-    provider('NaraRouter', 'NARA', { baseUrl: 'https://router.bynara.id/v1', model: 'auto', website: 'https://router.bynara.id' }),
+    provider('NaraRouter', 'NARA', {
+      baseUrl: 'https://router.bynara.id/v1',
+      model: 'auto',
+      imageUrl: 'https://api-images.bynara.id/v1/images/generations',
+      videoUrl: 'https://api-images.bynara.id/v1/videos',
+      imageModel: process.env.NARA_IMAGE_MODEL || 'agnes-image-2.1-flash',
+      videoModel: process.env.NARA_VIDEO_MODEL || 'agnes-video-v2.0',
+      website: 'https://router.bynara.id'
+    }),
     provider('Google Gemini', 'GEMINI', {
       baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
-      model: 'gemini-3.8-flash',
-      models: ['gemini-3.7-flash', 'gemini-3.6-flash'],
+      model: process.env.GEMINI_MODEL || 'gemini-3.8-flash',
       website: 'https://ai.google.dev'
     }),
     provider('Groq', 'GROQ', { baseUrl: 'https://api.groq.com/openai/v1', model: 'llama-3.3-70b-versatile', website: 'https://groq.com' }),
