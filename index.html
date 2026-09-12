@@ -134,6 +134,13 @@ html,body{height:auto !important;min-height:100%;overflow-y:auto !important;over
 .chat-toolbar-title{font-size:10px;font-weight:800;letter-spacing:.04em;color:#8ea1b8;text-transform:uppercase}
 @media(max-width:680px){.workspace-bar{position:static!important}.tabs{width:100%;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:5px}.tab{min-width:0;padding:9px 4px;font-size:9px;line-height:1.2}.chat-toolbar{padding:8px 10px}.chat-toolbar-title{font-size:9px}.workspace-actions{display:flex!important;gap:5px}.workspace-actions .mini{height:30px}}
 
+
+/* ===== WORKSPACE TAB VISIBILITY FIX ===== */
+.pane:not(.active){display:none!important;}
+.pane.active.chat-pane{display:flex!important;flex-direction:column!important;}
+.pane.active.research-pane,
+.pane.active.media-pane,
+.pane.active.config-pane{display:block!important;}
 </style>
 </head>
 <body>
