@@ -1,4 +1,9 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "outputDirectory": "."
+  "outputDirectory": ".",
+  "functions": {
+    "api/research.js": {
+      "maxDuration": 60
+    }
+  }
 }
