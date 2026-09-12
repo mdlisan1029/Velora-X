@@ -129,6 +129,11 @@ html,body{height:auto !important;min-height:100%;overflow-y:auto !important;over
   .research-actions{width:100%!important;}
   .research-actions .mini{max-width:100%!important;}
 }
+
+.chat-toolbar{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:9px 12px;border-bottom:1px solid var(--line);background:rgba(3,9,17,.22)}
+.chat-toolbar-title{font-size:10px;font-weight:800;letter-spacing:.04em;color:#8ea1b8;text-transform:uppercase}
+@media(max-width:680px){.workspace-bar{position:static!important}.tabs{width:100%;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:5px}.tab{min-width:0;padding:9px 4px;font-size:9px;line-height:1.2}.chat-toolbar{padding:8px 10px}.chat-toolbar-title{font-size:9px}.workspace-actions{display:flex!important;gap:5px}.workspace-actions .mini{height:30px}}
+
 </style>
 </head>
 <body>
@@ -151,8 +156,9 @@ html,body{height:auto !important;min-height:100%;overflow-y:auto !important;over
   </section>
 </aside>
 <main class="workspace">
-  <div class="workspace-bar"><div class="tabs"><button class="tab active" data-pane="chat">Chat</button><button class="tab" data-pane="research">Web &amp; Research</button><button class="tab" data-pane="media">Media Studio</button><button class="tab" data-pane="config">Add Providers</button></div><div class="workspace-actions"><button class="mini" id="copyLastBtn">Copy last</button><button class="mini" id="clearBtn">Clear</button></div></div>
+  <div class="workspace-bar"><nav class="tabs" aria-label="Workspace"><button class="tab active" data-pane="chat">Chat</button><button class="tab" data-pane="research">Web &amp; Research</button><button class="tab" data-pane="media">Media Studio</button><button class="tab" data-pane="config">Add Providers</button></nav></div>
   <section id="chatPane" class="pane active chat-pane">
+    <div class="chat-toolbar"><div class="chat-toolbar-title">Conversation</div><div class="workspace-actions"><button class="mini" id="copyLastBtn">Copy last</button><button class="mini" id="clearBtn">Clear</button></div></div>
     <div id="messages" class="messages"><div class="welcome"><div class="orb"></div><div class="eyebrow" style="margin-top:18px">VELORA X ONLINE</div><h2>Pick a model. Create.</h2><p>Use the provider and model selectors, then chat. Responses expose the provider used so you always know which engine answered.</p><div class="suggestions"><button class="suggestion" data-prompt="Explain this concept simply with an example: quantum entanglement">Explain a complex topic</button><button class="suggestion" data-prompt="Write a production-ready responsive landing page in HTML and CSS">Generate website code</button><button class="suggestion" data-prompt="Give me 10 realistic product ideas I could build with APIs">Product ideas</button></div></div></div>
     <div class="composer-wrap"><div id="attachmentBar" class="attachment-bar"></div><form id="composer" class="composer"><input id="fileInput" type="file" hidden accept="image/*,application/pdf,text/plain,text/markdown,text/csv,application/json,text/html,text/css,text/javascript,.js,.ts,.jsx,.tsx,.py,.java,.c,.cpp,.cs,.go,.rs,.sql,.xml,.yml,.yaml"><textarea id="prompt" class="prompt" placeholder="Message your selected model…"></textarea><div class="composer-foot"><div class="hint"><button id="attachBtn" type="button" class="attach-btn" aria-label="Attach file">＋</button> Enter = send · Shift+Enter = newline <span class="attachment-note">Image/PDF/code analysis uses Gemini</span></div><button id="sendBtn" class="btn primary" type="submit">Send ↗</button></div></form><div class="footerline">Your API keys stay server-side. Provider availability depends on your configured accounts and quotas.</div></div>
   </section>
@@ -190,6 +196,6 @@ html,body{height:auto !important;min-height:100%;overflow-y:auto !important;over
 </div>
 </div>
 <dialog id="statusDialog" class="modal"><div class="modal-head"><div><div class="eyebrow">SYSTEM</div><h3 style="margin:4px 0 0">Configured providers</h3></div><button class="icon-btn" id="closeDialog">×</button></div><div class="modal-body"><div id="statusBody" class="status-grid"></div></div></dialog>
-<script src="./public/app.js?v=tavily-1"></script>
-<script src="./public/history.js?v=tavily-1"></script>
+<script src="./public/app.js?v=stable-2"></script>
+<script src="./public/history.js?v=stable-2"></script>
 </body></html>
