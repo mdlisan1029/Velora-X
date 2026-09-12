@@ -3,7 +3,6 @@
   "outputDirectory": ".",
   "functions": {
     "api/research.js": {
-      "runtime": "nodejs24.x",
       "maxDuration": 60
     }
   }
