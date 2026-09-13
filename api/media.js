@@ -15,6 +15,20 @@ function isAgnes(provider) {
   return id.includes('agnes') || name.includes('agnes') || base.includes('agnes-ai.com');
 }
 
+function normalizeAgnesProvider(provider) {
+  if (!isAgnes(provider) || !process.env.AGNES_API_KEY) return provider;
+  return {
+    ...provider,
+    key: process.env.AGNES_API_KEY,
+    baseUrl: `${AGNES_BASE}/v1`,
+    imageUrl: `${AGNES_BASE}/v1/images/generations`,
+    videoUrl: `${AGNES_BASE}/v1/videos`,
+    imageModel: 'agnes-image-2.1-flash',
+    videoModel: 'agnes-video-v2.0',
+    name: provider.name || 'Agnes AI'
+  };
+}
+
 function timeoutSignal(ms) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), ms);
@@ -30,15 +44,15 @@ async function fetchTimeout(url, options = {}, ms = 55000) {
   }
 }
 
-function imageBody(body, provider) {
+function imageBody(body, provider, wantBase64 = false) {
   const payload = {
     model: body.model || provider.imageModel,
     prompt: String(body.prompt || '').trim(),
     size: body.size || '1024x1024'
   };
   if (isAgnes(provider)) {
-    payload.n = 1;
-    payload.extra_body = { response_format: 'url' };
+    payload.extra_body = { response_format: wantBase64 ? 'b64_json' : 'url' };
+    if (wantBase64) payload.return_base64 = true;
   } else {
     payload.quality = body.quality || 'auto';
     payload.n = Math.min(Number(body.n) || 1, 4);
@@ -173,7 +187,7 @@ async function waitForAgnesVideo(videoId, provider, timeoutMs = 55000) {
 }
 
 async function proxyExternalMedia(req, res) {
-  const providers = getProviders();
+  const providers = getProviders().map(normalizeAgnesProvider);
   const raw = req.query?.url;
   if (!raw) return res.status(400).json({ error: 'url is required.' });
   let url;
@@ -198,7 +212,7 @@ async function proxyExternalMedia(req, res) {
 async function streamAgnesVideo(req, res) {
   const providerId = String(req.query?.providerId || '');
   const videoId = String(req.query?.videoId || '');
-  const provider = getProviders().find(p => p.id === providerId);
+  const provider = getProviders().map(normalizeAgnesProvider).find(p => p.id === providerId);
   if (!provider || !videoId) return res.status(400).json({ error: 'providerId and videoId are required.' });
 
   try {
@@ -236,7 +250,8 @@ export default async function handler(req, res) {
   const prompt = String(body.prompt || '').trim();
   if (!prompt || prompt.length > 12000) return res.status(400).json({ error: 'A valid prompt is required.' });
 
-  const providers = getProviders().filter(p => type === 'image' ? (p.imageUrl || p.imageModel) : (p.videoUrl || p.videoModel));
+  const configuredProviders = getProviders().map(normalizeAgnesProvider);
+  const providers = configuredProviders.filter(p => type === 'image' ? (p.imageUrl || p.imageModel) : (p.videoUrl || p.videoModel));
   if (!providers.length) return res.status(503).json({ error: `No ${type} provider is configured.` });
 
   const requestedProvider = String(body.providerId || '');
@@ -250,23 +265,35 @@ export default async function handler(req, res) {
     const model = body.model || (type === 'image' ? provider.imageModel : provider.videoModel);
     if (!model) { errors.push({ provider: provider.name, status: 400, message: `No ${type} model configured.` }); continue; }
 
-    const payload = type === 'image' ? imageBody(body, provider) : videoBody(body, provider);
+    let attemptList = type === 'image' && isAgnes(provider)
+      ? [imageBody(body, provider, false), imageBody(body, provider, true)]
+      : [type === 'image' ? imageBody(body, provider) : videoBody(body, provider)];
 
     try {
-      const upstream = await fetchTimeout(endpoint, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${provider.key}`, 'Content-Type': 'application/json', Accept: 'application/json' },
-        body: JSON.stringify(payload)
-      }, type === 'video' && isAgnes(provider) ? 55000 : 45000);
+      let upstream = null;
+      let data = {};
+      for (let attemptIndex = 0; attemptIndex < attemptList.length; attemptIndex += 1) {
+        const payload = attemptList[attemptIndex];
+        upstream = await fetchTimeout(endpoint, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${provider.key}`, 'Content-Type': 'application/json', Accept: 'application/json' },
+          body: JSON.stringify(payload)
+        }, type === 'video' && isAgnes(provider) ? 55000 : 45000);
+        const text = await upstream.text();
+        data = parseJson(text);
+        if (upstream.ok || upstream.status === 202) break;
 
-      const text = await upstream.text();
-      const data = parseJson(text);
-      if (!upstream.ok && upstream.status !== 202) {
         const message = data?.error?.message || data?.message || `HTTP ${upstream.status}`;
-        errors.push({ provider: provider.name, status: upstream.status, message: String(message).slice(0, 1000) });
+        errors.push({ provider: provider.name, status: upstream.status, message: String(message).slice(0, 1000), attempt: attemptIndex + 1 });
+
+        // Agnes image endpoint has historically returned 400/422 for URL-output edge cases.
+        // Retry once using b64_json output before giving up.
+        if (type === 'image' && isAgnes(provider) && attemptIndex === 0 && [400, 422].includes(upstream.status)) continue;
         if (RETRYABLE.has(upstream.status) || [401, 403, 404].includes(upstream.status)) continue;
         continue;
       }
+
+      if (!upstream.ok && upstream.status !== 202) continue;
 
       if (type === 'video' && isAgnes(provider)) {
         const videoId = String(data?.video_id || data?.videoId || '');
