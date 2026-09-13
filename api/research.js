@@ -4,8 +4,8 @@ const TAVILY_URL = `${trimSlash(process.env.TAVILY_BASE_URL || 'https://api.tavi
 const NARA_BASE = trimSlash(process.env.NARA_BASE_URL || 'https://router.bynara.id/v1');
 const DEFAULT_NARA_MODEL = process.env.NARA_RESEARCH_MODEL || process.env.NARA_MODEL || 'agnes-2.5-flash';
 
-const TAVILY_TIMEOUT = 12000;
-const NARA_TIMEOUT = 12000;
+const TAVILY_TIMEOUT = 20000;
+const NARA_TIMEOUT = 18000;
 
 function parseDomains(raw) {
   return String(raw || '')
@@ -29,7 +29,7 @@ function uniqueByUrl(results) {
   });
 }
 
-async function fetchWithTimeout(url, options = {}, timeoutMs) {
+async function fetchWithTimeout(url, options = {}, timeoutMs = 20000) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -44,10 +44,8 @@ async function fetchWithTimeout(url, options = {}, timeoutMs) {
 
 async function parseResponse(upstream) {
   const raw = await upstream.text();
-  let data = {};
-  try { data = raw ? JSON.parse(raw) : {}; }
-  catch { data = { message: raw }; }
-  return data;
+  try { return raw ? JSON.parse(raw) : {}; }
+  catch { return { message: raw }; }
 }
 
 async function tavilySearch(query, { advanced = false, domains = [] } = {}) {
@@ -110,28 +108,48 @@ async function synthesizeWithNara(query, results, mode) {
   const key = process.env.NARA_API_KEY;
   if (!key) return { text: '', degraded: true, reason: 'NARA_API_KEY is not configured in Vercel.' };
 
-  const upstream = await fetchWithTimeout(`${NARA_BASE}/chat/completions`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      model: DEFAULT_NARA_MODEL,
-      messages: [
-        { role: 'system', content: 'You are Velora X Research, a source-grounded web research assistant.' },
-        { role: 'user', content: buildResearchPrompt(query, results, mode) },
-      ],
-      temperature: mode === 'deep' ? 0.2 : 0.3,
-      max_tokens: mode === 'deep' ? 5000 : 2400,
-    }),
-  }, NARA_TIMEOUT);
+  const payload = {
+    model: DEFAULT_NARA_MODEL,
+    messages: [
+      { role: 'system', content: 'You are Velora X Research, a source-grounded web research assistant.' },
+      { role: 'user', content: buildResearchPrompt(query, results, mode) },
+    ],
+    temperature: 0.2,
+    max_tokens: mode === 'deep' ? 5000 : 2400,
+  };
 
-  const data = await parseResponse(upstream);
-  if (!upstream.ok) {
-    const msg = data?.error?.message || data?.message || `Nara synthesis failed (${upstream.status})`;
-    return { text: '', degraded: true, reason: String(msg).slice(0, 800) };
+  let lastReason = '';
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const upstream = await fetchWithTimeout(`${NARA_BASE}/chat/completions`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      }, NARA_TIMEOUT);
+
+      const data = await parseResponse(upstream);
+      if (!upstream.ok) {
+        lastReason = String(data?.error?.message || data?.message || `Nara synthesis failed (${upstream.status})`).slice(0, 800);
+        if (attempt === 0 && [408, 425, 429, 500, 502, 503, 504].includes(upstream.status)) {
+          await new Promise((r) => setTimeout(r, 900));
+          continue;
+        }
+        return { text: '', degraded: true, reason: lastReason };
+      }
+
+      const text = String(data?.choices?.[0]?.message?.content || '').trim();
+      if (text) return { text, degraded: false, reason: '' };
+      lastReason = 'Nara returned no text.';
+    } catch (err) {
+      lastReason = err?.message || 'Nara synthesis failed.';
+      if (attempt === 0) {
+        await new Promise((r) => setTimeout(r, 900));
+        continue;
+      }
+    }
   }
 
-  const text = String(data?.choices?.[0]?.message?.content || '').trim();
-  return text ? { text, degraded: false, reason: '' } : { text: '', degraded: true, reason: 'Nara returned no text.' };
+  return { text: '', degraded: true, reason: String(lastReason).slice(0, 800) };
 }
 
 function buildDeepQueries(query) {
@@ -182,14 +200,17 @@ export default async function handler(req, res) {
       tavilyAnswer = found.answer;
     } else {
       const planned = buildDeepQueries(query);
-      const found = [];
-      for (const q of planned) {
-        try { found.push(await tavilySearch(q, { advanced: true, domains })); }
-        catch (err) { found.push({ results: [], credits: 0, error: err?.message || 'Search failed.' }); }
-      }
+      const settled = await Promise.allSettled(planned.map((q) => tavilySearch(q, { advanced: true, domains })));
+      const found = settled.map((item) => item.status === 'fulfilled'
+        ? item.value
+        : { results: [], credits: 0, error: item.reason?.message || 'Search failed.' });
       queries = planned;
       tavilyCredits = found.reduce((sum, x) => sum + Number(x.credits || 0), 0);
       results = uniqueByUrl(found.flatMap((x) => x.results || [])).slice(0, 18);
+
+      if (!results.length && found.every((x) => x.error)) {
+        return res.status(502).json({ ok: false, error: found[0].error || 'All deep research searches failed.' });
+      }
     }
 
     const sources = sourcePayload(results);
