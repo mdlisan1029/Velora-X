@@ -51,8 +51,10 @@ function imageBody(body, provider, wantBase64 = false) {
     size: body.size || '1024x1024'
   };
   if (isAgnes(provider)) {
-    payload.extra_body = { response_format: wantBase64 ? 'b64_json' : 'url' };
-    if (wantBase64) payload.return_base64 = true;
+    // Always request Base64 for Agnes images. The generated URL may point to
+    // an ephemeral/host-restricted asset and can fail in the browser; Base64
+    // keeps the image same-origin and directly renderable.
+    payload.return_base64 = true;
   } else {
     payload.quality = body.quality || 'auto';
     payload.n = Math.min(Number(body.n) || 1, 4);
@@ -266,7 +268,7 @@ export default async function handler(req, res) {
     if (!model) { errors.push({ provider: provider.name, status: 400, message: `No ${type} model configured.` }); continue; }
 
     let attemptList = type === 'image' && isAgnes(provider)
-      ? [imageBody(body, provider, false), imageBody(body, provider, true)]
+      ? [imageBody(body, provider, true)]
       : [type === 'image' ? imageBody(body, provider) : videoBody(body, provider)];
 
     try {
@@ -286,9 +288,8 @@ export default async function handler(req, res) {
         const message = data?.error?.message || data?.message || `HTTP ${upstream.status}`;
         errors.push({ provider: provider.name, status: upstream.status, message: String(message).slice(0, 1000), attempt: attemptIndex + 1 });
 
-        // Agnes image endpoint has historically returned 400/422 for URL-output edge cases.
-        // Retry once using b64_json output before giving up.
-        if (type === 'image' && isAgnes(provider) && attemptIndex === 0 && [400, 422].includes(upstream.status)) continue;
+        // Agnes image generation uses Base64 output directly; do not fall back
+        // to an ephemeral URL that may fail client-side.
         if (RETRYABLE.has(upstream.status) || [401, 403, 404].includes(upstream.status)) continue;
         continue;
       }
