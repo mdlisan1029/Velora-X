@@ -1,53 +1,14 @@
 import { getProviders } from './providers.js';
 
-const retryable = new Set([408, 409, 425, 429, 500, 502, 503, 504]);
-const NARA_VIDEO_ORIGIN = 'https://api-images.bynara.id';
+const RETRYABLE = new Set([408, 409, 425, 429, 500, 502, 503, 504]);
+const AGNES_API_ROOT = 'https://apihub.agnes-ai.com';
+const AGNES_VIDEO_POLL_MS = 5000;
 
-function responseJson(text) {
-  try { return JSON.parse(text); } catch { return { message: text }; }
+function parseJson(text) {
+  try { return text ? JSON.parse(text) : {}; } catch { return { message: text }; }
 }
 
-function imageBody(body, provider) {
-  return {
-    model: body.model || provider.imageModel,
-    prompt: String(body.prompt || '').trim(),
-    size: body.size || '1024x1024',
-    quality: body.quality || 'auto',
-    ...(provider.id === 'nara' ? {} : { n: Math.min(Number(body.n) || 1, 4) })
-  };
-}
-
-function videoBody(body, provider) {
-  return {
-    model: body.model || provider.videoModel,
-    prompt: String(body.prompt || '').trim(),
-    duration: Math.max(3, Math.min(Number.parseInt(body.duration, 10) || 5, 15)),
-    ...(body.mode ? { mode: String(body.mode) } : { mode: 't2v' }),
-    ...(body.resolution ? { resolution: body.resolution } : { resolution: '720p' }),
-    ...(body.ratio ? { ratio: body.ratio } : { ratio: '16:9' })
-  };
-}
-
-function collectUrls(data, type) {
-  const urls = [];
-  const dataItems = Array.isArray(data?.data) ? data.data : [];
-  for (const item of dataItems) {
-    if (item?.url) urls.push(item.url);
-    else if (item?.b64_json) urls.push(`data:${type === 'video' ? 'video/mp4' : 'image/png'};base64,${item.b64_json}`);
-    else if (item?.output_url) urls.push(item.output_url);
-  }
-  if (data?.url) urls.push(data.url);
-  if (data?.output_url) urls.push(data.output_url);
-  if (Array.isArray(data?.output)) urls.push(...data.output.filter(x => typeof x === 'string'));
-  return urls;
-}
-
-function normalizeVideoUrl(url) {
-  if (!url) return '';
-  try { return new URL(url, NARA_VIDEO_ORIGIN).toString(); } catch { return String(url); }
-}
-
-async function fetchWithTimeout(url, options, timeoutMs = 55000) {
+async function fetchWithTimeout(url, options = {}, timeoutMs = 55000) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -57,128 +18,194 @@ async function fetchWithTimeout(url, options, timeoutMs = 55000) {
   }
 }
 
-async function pollNaraVideo(endpoint, jobId, timeoutMs = 50000) {
+function imagePayload(body, provider) {
+  const payload = {
+    model: body.model || provider.imageModel,
+    prompt: String(body.prompt || '').trim(),
+    size: body.size || '1024x1024',
+  };
+  if (provider.id === 'agnes') {
+    payload.extra_body = { response_format: 'url' };
+  } else {
+    payload.quality = body.quality || 'auto';
+    payload.n = Math.min(Number(body.n) || 1, 4);
+  }
+  return payload;
+}
+
+function parseSize(size) {
+  const m = String(size || '').match(/^(\d+)x(\d+)$/);
+  return m ? { width: Number(m[1]), height: Number(m[2]) } : { width: 1152, height: 768 };
+}
+
+function videoPayload(body, provider) {
+  if (provider.id === 'agnes') {
+    const { width, height } = parseSize(body.size || '1280x720');
+    const seconds = Math.max(3, Math.min(parseInt(String(body.duration || '5'), 10) || 5, 8));
+    return {
+      model: body.model || provider.videoModel,
+      prompt: String(body.prompt || '').trim(),
+      width,
+      height,
+      num_frames: seconds * 24 + 1,
+      frame_rate: 24,
+    };
+  }
+  return {
+    model: body.model || provider.videoModel,
+    prompt: String(body.prompt || '').trim(),
+    duration: Math.max(3, Math.min(parseInt(String(body.duration || '5'), 10) || 5, 15)),
+    size: body.size,
+  };
+}
+
+function collectUrls(data, type) {
+  const urls = [];
+  const add = (v) => { if (typeof v === 'string' && v.trim()) urls.push(v.trim()); };
+  const items = Array.isArray(data?.data) ? data.data : [];
+  for (const item of items) {
+    add(item?.url);
+    add(item?.output_url);
+    add(item?.video_url);
+    if (item?.b64_json) add(`data:${type === 'video' ? 'video/mp4' : 'image/png'};base64,${item.b64_json}`);
+  }
+  add(data?.url);
+  add(data?.output_url);
+  add(data?.video_url);
+  if (Array.isArray(data?.output)) data.output.forEach(add);
+  if (Array.isArray(data?.videos)) data.videos.forEach((v) => add(v?.url || v?.video_url || v));
+  return [...new Set(urls)];
+}
+
+function videoIdFrom(data) {
+  return String(data?.video_id || data?.id || data?.data?.video_id || data?.data?.id || '').trim();
+}
+
+function statusFrom(data) {
+  return String(data?.status || data?.data?.status || '').toLowerCase();
+}
+
+async function pollAgnesVideo(videoId, maxMs = 55000) {
   const started = Date.now();
-  while (Date.now() - started < timeoutMs) {
-    await new Promise(resolve => setTimeout(resolve, 4000));
-    const statusUrl = `${endpoint.replace(/\/$/, '')}/${encodeURIComponent(jobId)}`;
-    const r = await fetchWithTimeout(statusUrl, {
-      headers: { Authorization: `Bearer ${process.env.NARA_API_KEY}`, Accept: 'application/json' }
-    }, 8000);
+  while (Date.now() - started < maxMs) {
+    const r = await fetchWithTimeout(`${AGNES_API_ROOT}/agnesapi?video_id=${encodeURIComponent(videoId)}`, {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${process.env.AGNES_API_KEY}`, Accept: 'application/json' },
+    }, 10000);
     const text = await r.text();
-    const data = responseJson(text);
+    const data = parseJson(text);
     if (!r.ok) {
-      const msg = data?.error?.message || data?.message || `Nara video status failed (${r.status})`;
-      throw new Error(String(msg).slice(0, 800));
+      const msg = data?.error?.message || data?.message || `Agnes video status failed (${r.status})`;
+      throw new Error(String(msg).slice(0, 900));
     }
-    const status = String(data?.status || '').toLowerCase();
-    if (status === 'succeeded' || status === 'completed' || status === 'done') {
+    const status = statusFrom(data);
+    if (['succeeded', 'success', 'completed', 'done'].includes(status)) {
       const urls = collectUrls(data, 'video');
-      if (data?.url) urls.push(normalizeVideoUrl(data.url));
-      const unique = [...new Set(urls.filter(Boolean).map(normalizeVideoUrl))];
-      if (unique.length) return { urls: unique, raw: data };
-      throw new Error('Nara video finished but returned no downloadable URL.');
+      if (!urls.length) throw new Error('Agnes video completed but returned no video URL.');
+      return { urls, raw: data };
     }
-    if (status === 'failed' || status === 'error' || status === 'cancelled') {
-      throw new Error(String(data?.error?.message || data?.message || 'Nara video generation failed.').slice(0, 800));
+    if (['failed', 'error', 'cancelled'].includes(status)) {
+      throw new Error(String(data?.error?.message || data?.message || 'Agnes video generation failed.').slice(0, 900));
     }
+    await new Promise(resolve => setTimeout(resolve, AGNES_VIDEO_POLL_MS));
   }
   return { pending: true };
 }
 
-export default async function handler(req, res) {
-  if (req.method !== 'POST' && req.method !== 'GET') return res.status(405).json({ error: 'Method not allowed' });
+async function callProvider(provider, type, body) {
+  const endpoint = type === 'image'
+    ? (provider.imageUrl || `${provider.baseUrl}/images/generations`)
+    : provider.videoUrl;
+  if (!endpoint) throw new Error(`No ${type} endpoint configured for ${provider.name}.`);
 
-  if (req.method === 'GET') {
-    const providerId = String(req.query?.providerId || '');
-    const jobId = String(req.query?.jobId || '');
-    if (providerId !== 'nara' || !jobId || !process.env.NARA_API_KEY) {
-      return res.status(400).json({ error: 'providerId=nara and jobId are required.' });
+  const payload = type === 'image' ? imagePayload(body, provider) : videoPayload(body, provider);
+  const upstream = await fetchWithTimeout(endpoint, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${provider.key}`,
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+    },
+    body: JSON.stringify(payload),
+  }, type === 'video' ? 55000 : 55000);
+
+  const text = await upstream.text();
+  const data = parseJson(text);
+  if (!upstream.ok && upstream.status !== 202) {
+    const msg = data?.error?.message || data?.message || `HTTP ${upstream.status}`;
+    const error = new Error(String(msg).slice(0, 900));
+    error.status = upstream.status;
+    throw error;
+  }
+
+  if (type === 'video') {
+    const videoId = videoIdFrom(data);
+    if (provider.id === 'agnes' && videoId) {
+      return { ...await pollAgnesVideo(videoId), videoId };
     }
-    try {
-      const result = await pollNaraVideo('https://api-images.bynara.id/v1/videos', jobId, 12000);
-      return res.status(200).json({ ok: true, providerId: 'nara', type: 'video', ...result });
-    } catch (err) {
-      return res.status(502).json({ error: err?.message || 'Video status check failed.' });
+    if (provider.id === 'nara' && videoId) {
+      const naraOrigin = 'https://api-images.bynara.id';
+      const r = await fetchWithTimeout(`${naraOrigin}/v1/videos/${encodeURIComponent(videoId)}`, {
+        headers: { Authorization: `Bearer ${provider.key}`, Accept: 'application/json' },
+      }, 10000);
+      const d = parseJson(await r.text());
+      const urls = collectUrls(d, 'video');
+      if (urls.length) return { urls, raw: d, videoId };
     }
+  }
+
+  const urls = collectUrls(data, type);
+  if (!urls.length) throw new Error(`${provider.name} returned no usable ${type} URL.`);
+  return { urls, raw: data };
+}
+
+export default async function handler(req, res) {
+  if (req.method !== 'POST') {
+    res.setHeader('Allow', 'POST');
+    return res.status(405).json({ error: 'Method not allowed' });
   }
 
   const body = req.body || {};
   const type = body.type === 'video' ? 'video' : 'image';
-  if (!body.prompt || String(body.prompt).length > 12000) return res.status(400).json({ error: 'A valid prompt is required.' });
-
-  const providers = getProviders().filter(p => type === 'image'
-    ? (p.imageUrl || p.imageModel)
-    : (p.videoUrl || p.videoModel));
-
-  if (!providers.length) {
-    return res.status(503).json({
-      error: `No ${type} provider is configured. Add ${type}Url or ${type}Model to PROVIDERS_JSON, or configure a compatible built-in provider.`
-    });
+  const prompt = String(body.prompt || '').trim();
+  if (!prompt || prompt.length > 12000) {
+    return res.status(400).json({ error: 'A valid prompt is required.' });
   }
 
-  const requestedProvider = String(body.providerId || '');
+  const providers = getProviders().filter((p) => type === 'image' ? Boolean(p.imageUrl || p.imageModel) : Boolean(p.videoUrl || p.videoModel));
+  if (!providers.length) {
+    return res.status(503).json({ error: `No ${type} provider is configured.` });
+  }
+
+  const requestedProvider = String(body.providerId || '').trim();
   const ordered = requestedProvider
-    ? [...providers].sort((a, b) => (a.id === requestedProvider ? -1 : b.id === requestedProvider ? 1 : 0))
+    ? [...providers].sort((a, b) => Number(b.id === requestedProvider) - Number(a.id === requestedProvider))
     : providers;
 
   const errors = [];
   for (const provider of ordered) {
-    const endpoint = type === 'image' ? (provider.imageUrl || `${provider.baseUrl}/images/generations`) : provider.videoUrl;
-    if (!endpoint) continue;
-
-    if (type === 'image' && !provider.imageModel && !body.model) {
-      errors.push({ provider: provider.name, status: 400, message: 'This provider needs an image model. Set NARA_IMAGE_MODEL or enter a model in Media Studio.' });
-      continue;
-    }
-    if (type === 'video' && !provider.videoModel && !body.model) {
-      errors.push({ provider: provider.name, status: 400, message: 'This provider needs a video model.' });
-      continue;
-    }
-
-    const payload = type === 'image' ? imageBody(body, provider) : videoBody(body, provider);
-
     try {
-      const upstream = await fetchWithTimeout(endpoint, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${provider.key}`,
-          'Content-Type': 'application/json',
-          Accept: 'application/json'
-        },
-        body: JSON.stringify(payload)
-      }, type === 'video' && provider.id === 'nara' ? 55000 : 45000);
-
-      const text = await upstream.text();
-      const data = responseJson(text);
-      if (!upstream.ok && upstream.status !== 202) {
-        errors.push({ provider: provider.name, status: upstream.status, message: data?.error?.message || data?.message || `HTTP ${upstream.status}` });
-        if (retryable.has(upstream.status) || upstream.status === 401 || upstream.status === 403 || upstream.status === 404) continue;
-        continue;
+      const result = await callProvider(provider, type, body);
+      if (result?.pending) {
+        return res.status(202).json({ ok: true, provider: provider.name, providerId: provider.id, type, ...result });
       }
-
-      if (type === 'video' && provider.id === 'nara' && upstream.status === 202 && data?.id) {
-        try {
-          const result = await pollNaraVideo(endpoint, data.id, 50000);
-          if (result?.pending) {
-            return res.status(202).json({ ok: true, provider: provider.name, providerId: provider.id, type, pending: true, jobId: data.id, message: 'Video is still processing. Please wait a little and retry.' });
-          }
-          return res.status(200).json({ ok: true, provider: provider.name, providerId: provider.id, type, ...result });
-        } catch (pollErr) {
-          return res.status(502).json({ error: pollErr?.message || 'Nara video polling failed.', provider: provider.name, providerId: provider.id, jobId: data.id });
-        }
-      }
-
-      const urls = collectUrls(data, type);
-      if (!urls.length) {
-        return res.status(502).json({ error: `${provider.name} returned no usable ${type} URL.`, provider: provider.name, providerId: provider.id, raw: data });
-      }
-
-      return res.status(200).json({ provider: provider.name, providerId: provider.id, type, urls, raw: data });
+      return res.status(200).json({
+        ok: true,
+        provider: provider.name,
+        providerId: provider.id,
+        type,
+        ...result,
+      });
     } catch (err) {
-      errors.push({ provider: provider.name, status: 0, message: err?.name === 'AbortError' ? 'Provider request timed out.' : err?.message || 'Request failed.' });
+      errors.push({
+        provider: provider.name,
+        status: Number(err?.status || 0),
+        message: err?.name === 'AbortError' ? 'Provider request timed out.' : String(err?.message || 'Request failed.'),
+      });
+      const status = Number(err?.status || 0);
+      if (RETRYABLE.has(status) || status === 401 || status === 403 || status === 404) continue;
     }
   }
 
-  return res.status(503).json({ error: `All configured ${type} providers failed.`, errors });
+  return res.status(503).json({ error: `All configured ${type} providers failed.`, providers: errors });
 }

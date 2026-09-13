@@ -57,6 +57,15 @@ export function getProviders() {
       videoModel: process.env.NARA_VIDEO_MODEL || 'agnes-video-v2.0',
       website: 'https://router.bynara.id'
     }),
+    provider('Agnes AI', 'AGNES', {
+      baseUrl: 'https://apihub.agnes-ai.com/v1',
+      model: process.env.AGNES_MODEL || 'agnes-2.5-flash',
+      imageUrl: 'https://apihub.agnes-ai.com/v1/images/generations',
+      videoUrl: 'https://apihub.agnes-ai.com/v1/videos',
+      imageModel: process.env.AGNES_IMAGE_MODEL || 'agnes-image-2.1-flash',
+      videoModel: process.env.AGNES_VIDEO_MODEL || 'agnes-video-v2.0',
+      website: 'https://agnes-ai.com'
+    }),
     provider('Google Gemini', 'GEMINI', {
       baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
       model: process.env.GEMINI_MODEL || 'gemini-3.8-flash',
